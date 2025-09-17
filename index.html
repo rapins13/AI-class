@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>조별 상대평가 · 세션/조 드롭다운 · 관리자 통계</title>
+  <style>
+    body{font-family:sans-serif;margin:20px;background:#fafafa;color:#111}
+    .wrap{max-width:960px;margin:0 auto;}
+    .card{background:#fff;border:1px solid #ccc;border-radius:12px;padding:16px;margin-bottom:16px}
+    label{font-weight:600;display:block;margin:6px 0}
+    input,select,textarea{padding:8px;border:1px solid #ccc;border-radius:8px}
+    input#studentId{width:140px;} /* 학번 입력칸 줄임 */
+    select,textarea{width:100%}
+    .btn{padding:8px 14px;border-radius:8px;border:none;background:#333;color:#fff;font-weight:600;cursor:pointer}
+    .btn[disabled]{background:#999}
+    .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+    .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .criteria{display:grid;grid-template-columns:1fr 80px;gap:10px;align-items:center}
+    .topbar{position:fixed;top:10px;right:10px}
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:50}
+    .modal{background:#fff;padding:20px;border-radius:12px;width:300px}
+    table{width:100%;border-collapse:collapse}
+    th,td{border:1px solid #ddd;padding:6px;text-align:center}
+    th{background:#f0f0f0}
+    .danger{background:#c00;color:#fff}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <button id="openAdmin" class="btn">관리자</button>
+  </div>
+
+  <div class="card">
+    <h2>학생 평가 제출</h2>
+    <div class="row3">
+      <div>
+        <label>학번</label>
+        <input id="studentId" type="text" placeholder="예: 20010728">
+      </div>
+      <div>
+        <label>세션</label>
+        <select id="sessionSelect"></select>
+      </div>
+      <div>
+        <label>내 조</label>
+        <select id="myGroupSelect"></select>
+      </div>
+    </div>
+    <div class="row2">
+      <div>
+        <label>평가할 조</label>
+        <select id="targetGroupSelect"></select>
+      </div>
+      <div>
+        <label>코멘트</label>
+        <textarea id="comment" rows="2"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>평가 항목</h2>
+    <div id="criteriaForm" class="criteria"></div>
+    <button id="submitBtn" class="btn" disabled>제출</button>
+    <div id="submitMsg"></div>
+  </div>
+
+  <div id="adminPanel" class="card" style="display:none">
+    <h2>관리자 대시보드</h2>
+    <label>세션 선택</label>
+    <select id="adminSession"></select>
+    <label>정렬</label>
+    <select id="sortSelect">
+      <option value="overall">종합점수</option>
+      <option value="count">응답수</option>
+    </select>
+    <button id="exportCsvBtn" class="btn">CSV 내보내기</button>
+    <table>
+      <thead><tr id="aggHead"></tr></thead>
+      <tbody id="aggBody"></tbody>
+    </table>
+    <h3>개별 제출 내역</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>학번</th><th>세션</th><th>내조</th><th>평가조</th>
+          <th>내용</th><th>명료성</th><th>상호작용</th>
+          <th>종합</th><th>코멘트</th><th>삭제</th>
+        </tr>
+      </thead>
+      <tbody id="submissionsBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 관리자 로그인 모달 -->
+<div id="adminModal" class="modal-backdrop">
+  <div class="modal">
+    <h3>관리자 로그인</h3>
+    <label>비밀번호</label>
+    <input id="adminPw" type="password">
+    <button id="cancelAdmin" class="btn" style="background:#777">취소</button>
+    <button id="adminLoginBtn" class="btn">로그인</button>
+    <div id="adminMsg"></div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+<script>
+const GROUPS=["A","B","C","D","E","F"];
+const CRITERIA=[
+ {key:"content",label:"내용의 정확성/깊이"},
+ {key:"clarity",label:"발표 명료성/구성"},
+ {key:"engagement",label:"청중과의 상호작용"}
+];
+const ADMIN_PW="1313";
+let db=null;
+
+// 허용된 학번 리스트
+const VALID_IDS=[
+  "20010728","21010621","21010632","21010659","21010676","21010729","21011085","21012803","21013168","22010661","22010678","22010679","22010710","22010719","22010773","22013376","22013497","22013522","23010618","23010649","23010682","23010688","23010694","23010723","23010742","23010746","23010760","23011245","23013448"
+];
+
+function initFirebase(){
+ const firebaseConfig={
+  apiKey:"AIzaSyCl7Ggf5rwG96nM8f1ZNeDRhUT1X66bPP4",
+  authDomain:"ai-gene-cell-therapy.firebaseapp.com",
+  projectId:"ai-gene-cell-therapy",
+  storageBucket:"ai-gene-cell-therapy.firebasestorage.app",
+  messagingSenderId:"245138164213",
+  appId:"1:245138164213:web:d78e21880ce0bdf2c1b8bc",
+  measurementId:"G-TE3WHRX7SK"
+ };
+ firebase.initializeApp(firebaseConfig);
+ db=firebase.firestore();
+}
+initFirebase();
+
+function $(id){return document.getElementById(id)}
+function nowTS(){return new Date().toISOString().slice(0,19).replace('T',' ')}
+
+// 세션 만들기
+function buildSessions(){
+ const sessions=[];const now=new Date();const year=now.getFullYear();const todayMid=new Date(year,now.getMonth(),now.getDate());
+ for(let m=9;m<=12;m++){
+  for(let d=1;d<=31;d++){
+   const x=new Date(year,m-1,d);
+   if(x.getMonth()!==m-1) break;
+   if(x.getDay()===4){
+    const xMid=new Date(year,m-1,d);
+    if(xMid>=todayMid){
+     sessions.push(`${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
+    }
+   }
+  }
+ }
+ return sessions;
+}
+
+// 드롭다운 초기화
+(function(){
+ const sessSel=$("sessionSelect"),mySel=$("myGroupSelect"),tgtSel=$("targetGroupSelect");
+ buildSessions().forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
+ GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;mySel.appendChild(o)});
+ GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;tgtSel.appendChild(o)});
+ mySel.addEventListener('change',()=>{
+  const mine=mySel.value;const firstOther=[...tgtSel.options].find(o=>o.value!==mine);
+  if(firstOther) tgtSel.value=firstOther.value;
+  validateForm();
+ });
+})();
+
+// 평가 항목 렌더링
+(function(){
+ const box=$("criteriaForm");
+ CRITERIA.forEach(c=>{
+  let lab=document.createElement('label');lab.textContent=c.label;
+  let sel=document.createElement('select');sel.dataset.key=c.key;
+  [1,2,3,4,5].forEach(v=>{let o=document.createElement('option');o.value=o.textContent=v;sel.appendChild(o)});
+  box.appendChild(lab);box.appendChild(sel);
+ });
+})();
+
+function validateForm(){
+ $("submitBtn").disabled=!($("studentId").value.trim()&&$("sessionSelect").value&&$("myGroupSelect").value&&$("targetGroupSelect").value);
+}
+["studentId","sessionSelect","myGroupSelect","targetGroupSelect"].forEach(id=>$(id).addEventListener('input',validateForm));
+
+// 제출 저장 (덮어쓰기)
+async function saveSubmission(row){
+ const docId=`${row.session_code}_${row.rater_id}_${row.target_group}`;
+ await db.collection('submissions').doc(docId).set(row);
+}
+
+$("submitBtn").addEventListener('click',async()=>{
+ const sid=$("studentId").value.trim();
+ if(!VALID_IDS.includes(sid)){
+   $("submitMsg").textContent="학번을 확인하세요.";
+   $("submitMsg").style.color="#c00";
+   return;
+ }
+ const sess=$("sessionSelect").value;
+ const my=$("myGroupSelect").value;
+ const tgt=$("targetGroupSelect").value;
+ const selects=[...document.querySelectorAll('#criteriaForm select')];
+ let sum=0;const scores={};
+ selects.forEach(s=>{let v=parseInt(s.value);scores[s.dataset.key]=v;sum+=v});
+ const overall=(sum/selects.length).toFixed(2);
+ const row={timestamp:nowTS(),session_code:sess,rater_id:sid,rater_group:my,target_group:tgt,overall,comment:$("comment").value,...Object.fromEntries(Object.entries(scores).map(([k,v])=>["c_"+k,v]))};
+ try{await saveSubmission(row);$("submitMsg").textContent="제출 완료 (이전 제출은 덮어쓰기됨)";$("submitMsg").style.color="#0a7";}catch(e){$("submitMsg").textContent="오류:"+e.message;$("submitMsg").style.color="#c00"}
+});
+
+// 관리자
+$("openAdmin").addEventListener('click',()=>{$("adminModal").style.display='flex';});
+$("cancelAdmin").addEventListener('click',()=>{$("adminModal").style.display='none'});
+$("adminLoginBtn").addEventListener('click',async()=>{
+ if($("adminPw").value!==ADMIN_PW){$("adminMsg").textContent="비번 오류";return}
+ $("adminModal").style.display='none';$("adminPanel").style.display='block';renderAgg();renderSubmissions();
+});
+
+async function loadAll(){const snap=await db.collection('submissions').get();return snap.docs.map(d=>({id:d.id,...d.data()}));}
+
+async function renderAgg(){
+ const sess=$("adminSession").value||buildSessions()[0];
+ const rows=(await loadAll()).filter(r=>r.session_code===sess);
+ const byGroup={};
+ rows.forEach(r=>{const g=r.target_group;if(!byGroup[g])byGroup[g]={count:0,sum_overall:0,sums:{}};byGroup[g].count++;byGroup[g].sum_overall+=Number(r.overall);CRITERIA.forEach(c=>{const key='c_'+c.key;byGroup[g].sums[key]=(byGroup[g].sums[key]||0)+Number(r[key])})});
+ const head=$("aggHead");head.innerHTML='';['그룹','응답수','종합평균',...CRITERIA.map(c=>c.label+' 평균')].forEach(t=>{let th=document.createElement('th');th.textContent=t;head.appendChild(th)});
+ const body=$("aggBody");body.innerHTML='';
+ Object.entries(byGroup).forEach(([g,info])=>{
+  const avg=(info.sum_overall/info.count).toFixed(2);
+  const avgEach=CRITERIA.map(c=>(info.sums['c_'+c.key]/info.count).toFixed(2));
+  let tr=document.createElement('tr');
+  [g,info.count,avg,...avgEach].forEach(v=>{let td=document.createElement('td');td.textContent=v;tr.appendChild(td)});
+  body.appendChild(tr);
+ });
+}
+
+async function renderSubmissions(){
+ const sess=$("adminSession").value||buildSessions()[0];
+ const rows=(await loadAll()).filter(r=>r.session_code===sess);
+ const body=$("submissionsBody");body.innerHTML='';
+ rows.forEach(r=>{
+  let tr=document.createElement('tr');
+  [r.rater_id,r.session_code,r.rater_group,r.target_group,r.c_content,r.c_clarity,r.c_engagement,r.overall,r.comment].forEach(v=>{
+    let td=document.createElement('td');td.textContent=v;tr.appendChild(td);
+  });
+  let tdDel=document.createElement('td');
+  let btn=document.createElement('button');btn.textContent='삭제';btn.className='btn danger';
+  btn.onclick=async()=>{await db.collection('submissions').doc(r.id).delete();renderSubmissions();renderAgg();};
+  tdDel.appendChild(btn);tr.appendChild(tdDel);
+  body.appendChild(tr);
+ });
+}
+</script>
+</body>
+</html>
