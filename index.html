@@ -6,14 +6,16 @@
   <title>조별 상대평가 · 세션/조 드롭다운 · 관리자 통계</title>
   <style>
     body{font-family:sans-serif;margin:20px;background:#fafafa;color:#111}
-    .wrap{max-width:960px;margin:0 auto;}
+    .wrap{max-width:1060px;margin:0 auto;}
     .card{background:#fff;border:1px solid #ccc;border-radius:12px;padding:16px;margin-bottom:16px}
     label{font-weight:600;display:block;margin:6px 0}
     input,select,textarea{padding:8px;border:1px solid #ccc;border-radius:8px}
     input#studentId{width:140px;} /* 학번 입력칸 줄임 */
+    input#questionsCount{width:120px;text-align:right;}
     select,textarea{width:100%}
     .btn{padding:8px 14px;border-radius:8px;border:none;background:#333;color:#fff;font-weight:600;cursor:pointer}
     .btn[disabled]{background:#999}
+    .row4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px}
     .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
     .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .criteria{display:grid;grid-template-columns:1fr 80px;gap:10px;align-items:center}
@@ -24,6 +26,7 @@
     th,td{border:1px solid #ddd;padding:6px;text-align:center}
     th{background:#f0f0f0}
     .danger{background:#c00;color:#fff}
+    .muted{color:#666;font-size:12px}
   </style>
 </head>
 <body>
@@ -34,7 +37,7 @@
 
   <div class="card">
     <h2>학생 평가 제출</h2>
-    <div class="row3">
+    <div class="row4">
       <div>
         <label>학번</label>
         <input id="studentId" type="text" placeholder="예: 20010728">
@@ -46,6 +49,11 @@
       <div>
         <label>내 조</label>
         <select id="myGroupSelect"></select>
+      </div>
+      <div>
+        <label>오늘 질문 개수</label>
+        <input id="questionsCount" type="number" min="0" step="1" placeholder="0" value="0" />
+        <div class="muted">본인이 오늘 수업 중 한 질문 수</div>
       </div>
     </div>
     <div class="row2">
@@ -81,16 +89,27 @@
       <thead><tr id="aggHead"></tr></thead>
       <tbody id="aggBody"></tbody>
     </table>
+
     <h3>개별 제출 내역</h3>
     <table>
       <thead>
         <tr>
           <th>학번</th><th>세션</th><th>내조</th><th>평가조</th>
           <th>내용</th><th>명료성</th><th>상호작용</th>
-          <th>종합</th><th>코멘트</th><th>삭제</th>
+          <th>종합</th><th>질문수</th><th>코멘트</th><th>삭제</th>
         </tr>
       </thead>
       <tbody id="submissionsBody"></tbody>
+    </table>
+
+    <h3>개인별 제출/질문 현황 (세션 기준)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>학번</th><th>제출여부</th><th>질문 합계</th>
+        </tr>
+      </thead>
+      <tbody id="rosterBody"></tbody>
     </table>
   </div>
 </div>
@@ -163,7 +182,8 @@ function buildSessions(){
 // 드롭다운 초기화
 (function(){
  const sessSel=$("sessionSelect"),mySel=$("myGroupSelect"),tgtSel=$("targetGroupSelect");
- buildSessions().forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
+ const sessions=buildSessions();
+ sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
  GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;mySel.appendChild(o)});
  GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;tgtSel.appendChild(o)});
  mySel.addEventListener('change',()=>{
@@ -185,9 +205,11 @@ function buildSessions(){
 })();
 
 function validateForm(){
- $("submitBtn").disabled=!($("studentId").value.trim()&&$("sessionSelect").value&&$("myGroupSelect").value&&$("targetGroupSelect").value);
+ const q=$("questionsCount").value;
+ const validQ = q!=='' && Number(q)>=0 && Number.isInteger(Number(q));
+ $("submitBtn").disabled=!( $("studentId").value.trim() && $("sessionSelect").value && $("myGroupSelect").value && $("targetGroupSelect").value && validQ );
 }
-["studentId","sessionSelect","myGroupSelect","targetGroupSelect"].forEach(id=>$(id).addEventListener('input',validateForm));
+["studentId","sessionSelect","myGroupSelect","targetGroupSelect","questionsCount"].forEach(id=>$(id).addEventListener('input',validateForm));
 
 // 제출 저장 (덮어쓰기)
 async function saveSubmission(row){
@@ -202,6 +224,12 @@ $("submitBtn").addEventListener('click',async()=>{
    $("submitMsg").style.color="#c00";
    return;
  }
+ const qn = Number($("questionsCount").value||0);
+ if(!(Number.isInteger(qn) && qn>=0)){
+   $("submitMsg").textContent="질문 개수를 올바르게 입력하세요 (0 이상의 정수).";
+   $("submitMsg").style.color="#c00";
+   return;
+ }
  const sess=$("sessionSelect").value;
  const my=$("myGroupSelect").value;
  const tgt=$("targetGroupSelect").value;
@@ -209,8 +237,8 @@ $("submitBtn").addEventListener('click',async()=>{
  let sum=0;const scores={};
  selects.forEach(s=>{let v=parseInt(s.value);scores[s.dataset.key]=v;sum+=v});
  const overall=(sum/selects.length).toFixed(2);
- const row={timestamp:nowTS(),session_code:sess,rater_id:sid,rater_group:my,target_group:tgt,overall,comment:$("comment").value,...Object.fromEntries(Object.entries(scores).map(([k,v])=>["c_"+k,v]))};
- try{await saveSubmission(row);$("submitMsg").textContent="제출 완료 (이전 제출은 덮어쓰기됨)";$("submitMsg").style.color="#0a7";}catch(e){$("submitMsg").textContent="오류:"+e.message;$("submitMsg").style.color="#c00"}
+ const row={timestamp:nowTS(),session_code:sess,rater_id:sid,rater_group:my,target_group:tgt,overall,questions_count: qn, comment:$("comment").value,...Object.fromEntries(Object.entries(scores).map(([k,v])=>["c_"+k,v]))};
+ try{await saveSubmission(row);$("submitMsg").textContent=`제출 완료 (질문 ${qn}개, 이전 제출은 덮어쓰기됨)`;$("submitMsg").style.color="#0a7";}catch(e){$("submitMsg").textContent="오류:"+e.message;$("submitMsg").style.color="#c00"}
 });
 
 // 관리자
@@ -218,7 +246,12 @@ $("openAdmin").addEventListener('click',()=>{$("adminModal").style.display='flex
 $("cancelAdmin").addEventListener('click',()=>{$("adminModal").style.display='none'});
 $("adminLoginBtn").addEventListener('click',async()=>{
  if($("adminPw").value!==ADMIN_PW){$("adminMsg").textContent="비번 오류";return}
- $("adminModal").style.display='none';$("adminPanel").style.display='block';renderAgg();renderSubmissions();
+ $("adminModal").style.display='none';$("adminPanel").style.display='block';
+ // 세션 드롭다운 채우기
+ const adminSel=$("adminSession");
+ adminSel.innerHTML='';
+ buildSessions().forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;adminSel.appendChild(o)});
+ renderAgg();renderSubmissions();renderRosterStatus();
 });
 
 async function loadAll(){const snap=await db.collection('submissions').get();return snap.docs.map(d=>({id:d.id,...d.data()}));}
@@ -245,14 +278,34 @@ async function renderSubmissions(){
  const body=$("submissionsBody");body.innerHTML='';
  rows.forEach(r=>{
   let tr=document.createElement('tr');
-  [r.rater_id,r.session_code,r.rater_group,r.target_group,r.c_content,r.c_clarity,r.c_engagement,r.overall,r.comment].forEach(v=>{
+  [r.rater_id,r.session_code,r.rater_group,r.target_group,r.c_content,r.c_clarity,r.c_engagement,r.overall,(r.questions_count??0),r.comment].forEach(v=>{
     let td=document.createElement('td');td.textContent=v;tr.appendChild(td);
   });
   let tdDel=document.createElement('td');
   let btn=document.createElement('button');btn.textContent='삭제';btn.className='btn danger';
-  btn.onclick=async()=>{await db.collection('submissions').doc(r.id).delete();renderSubmissions();renderAgg();};
+  btn.onclick=async()=>{await db.collection('submissions').doc(r.id).delete();renderSubmissions();renderAgg();renderRosterStatus();};
   tdDel.appendChild(btn);tr.appendChild(tdDel);
   body.appendChild(tr);
+ });
+}
+
+async function renderRosterStatus(){
+ const sess=$("adminSession").value||buildSessions()[0];
+ const rows=(await loadAll()).filter(r=>r.session_code===sess);
+ const byStudent = {};
+ VALID_IDS.forEach(id=>{byStudent[id]={submitted:false, questions:0};});
+ rows.forEach(r=>{
+   const id=r.rater_id; if(!(id in byStudent)) return;
+   byStudent[id].submitted = true;
+   byStudent[id].questions += Number(r.questions_count||0);
+ });
+ const body=$("rosterBody"); body.innerHTML='';
+ VALID_IDS.forEach(id=>{
+   const tr=document.createElement('tr');
+   const submitted = byStudent[id].submitted ? 'O' : 'X';
+   const qsum = byStudent[id].questions;
+   [id, submitted, qsum].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
+   body.appendChild(tr);
  });
 }
 </script>
