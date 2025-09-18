@@ -10,7 +10,7 @@
     .card{background:#fff;border:1px solid #ccc;border-radius:12px;padding:16px;margin-bottom:16px}
     label{font-weight:600;display:block;margin:6px 0}
     input,select,textarea{padding:8px;border:1px solid #ccc;border-radius:8px}
-    input#studentId{width:140px;} /* 학번 입력칸 줄임 */
+    input#studentId{width:140px;}
     input#questionsCount{width:120px;text-align:right;}
     select,textarea{width:100%}
     .btn{padding:8px 14px;border-radius:8px;border:none;background:#333;color:#fff;font-weight:600;cursor:pointer}
@@ -19,7 +19,6 @@
     .topbar{position:fixed;top:10px;right:10px}
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:50}
     .modal{background:#fff;padding:20px;border-radius:12px;width:300px}
-
     table{width:100%;border-collapse:collapse}
     th,td{border:1px solid #ddd;padding:8px;text-align:center;vertical-align:middle}
     th{background:#f0f0f0}
@@ -60,7 +59,7 @@
   <div class="card">
     <h2>모든 조 평가 입력</h2>
     <div class="muted">각 조(A~F)에 대해 3개 항목(내용/명료성/상호작용)을 1~5로 선택하고, 필요하면 코멘트를 남기세요. 제출 시 각 조별 평가가 개별 문서로 저장됩니다(같은 학번·세션·조로 재제출하면 덮어쓰기).</div>
-    <div class="muted" style="margin-top:6px">※ 자기 조 포함 여부는 현재 <b>포함</b>입니다. 제외가 필요하면 알려주세요.</div>
+    <div class="muted" style="margin-top:6px">※ <b>자기 조는 자동으로 제외</b>되어 표에서 숨겨집니다.</div>
 
     <table id="matrixTable" style="margin-top:10px">
       <thead>
@@ -191,25 +190,27 @@ function buildSessions(){
  const sessions=buildSessions();
  sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
  GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;mySel.appendChild(o)});
+ mySel.addEventListener('change',renderMatrix);
  renderMatrix();
 })();
 
 function renderMatrix(){
  const body=$("matrixBody"); body.innerHTML='';
+ const my=$("myGroupSelect").value;
  GROUPS.forEach(g=>{
+   if(my && g===my) return; // 자기 조는 표에서 숨김
    const tr=document.createElement('tr');
    const th=document.createElement('td'); th.textContent=g; th.className='sticky'; tr.appendChild(th);
-   // 3개 항목 select
    CRITERIA.forEach(c=>{
      const td=document.createElement('td');
      const sel=document.createElement('select'); sel.dataset.group=g; sel.dataset.key=c.key;
      [1,2,3,4,5].forEach(v=>{const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o)});
      td.appendChild(sel); tr.appendChild(td);
    });
-   // 코멘트
    const tdC=document.createElement('td'); const txt=document.createElement('textarea'); txt.rows=1; txt.dataset.group=g; txt.placeholder='선택'; tdC.appendChild(txt); tr.appendChild(tdC);
    body.appendChild(tr);
  });
+ validateForm();
 }
 
 function validateForm(){
@@ -219,12 +220,10 @@ function validateForm(){
  const q=$("questionsCount").value;
  const validQ = q!=='' && Number(q)>=0 && Number.isInteger(Number(q));
  const okBasics = sid && sess && my && validQ;
- // 모든 select가 값(1~5)을 가지는지 체크 (기본값 있기에 통과)
  const allFilled = [...document.querySelectorAll('#matrixBody select')].every(s=> !!s.value);
  $("submitBtn").disabled = !(okBasics && allFilled);
 }
 ["studentId","sessionSelect","myGroupSelect","questionsCount"].forEach(id=>$(id).addEventListener('input',validateForm));
-// 행렬 내부 셀렉트/텍스트도 변경 감지
 $("matrixBody").addEventListener('input', validateForm);
 
 // 제출 저장 (조별 개별 문서, 동일 키 재제출시 덮어쓰기)
@@ -247,7 +246,6 @@ $("submitBtn").addEventListener('click', async ()=>{
  const sess=$("sessionSelect").value;
  const my=$("myGroupSelect").value;
 
- // 각 조별로 점수/코멘트 수집
  const selects=[...document.querySelectorAll('#matrixBody select')];
  const commentsByGroup = Object.fromEntries([...document.querySelectorAll('#matrixBody textarea')].map(t=>[t.dataset.group, t.value]));
  const dataByGroup = {};
@@ -257,11 +255,10 @@ $("submitBtn").addEventListener('click', async ()=>{
    dataByGroup[g][k]=v;
  });
 
- // 저장: 그룹별 한 문서씩
  let saved=0, failed=0; let lastErr='';
  for(const g of GROUPS){
+   if(my && g===my) continue; // 자기 조는 저장 제외
    const scores=dataByGroup[g]||{};
-   // 종합 계산
    const vals = CRITERIA.map(c=> Number(scores[c.key]||0));
    const sum = vals.reduce((a,b)=>a+b,0);
    const overall=(sum/CRITERIA.length).toFixed(2);
@@ -275,7 +272,7 @@ $("submitBtn").addEventListener('click', async ()=>{
    try{ await saveSubmission(row); saved++; }catch(e){ failed++; lastErr=e.message; }
  }
  if(failed===0){
-   $("submitMsg").textContent=`모든 조 평가 제출 완료 (${saved}건 저장, 질문 ${qn}개)`; $("submitMsg").style.color="#0a7";
+   $("submitMsg").textContent=`자기 조 제외, 제출 완료 (${saved}건 저장, 질문 ${qn}개)`; $("submitMsg").style.color="#0a7";
  }else{
    $("submitMsg").textContent=`일부 저장 실패: ${failed}건 오류 (${lastErr})`; $("submitMsg").style.color="#c00";
  }
@@ -287,7 +284,6 @@ $("cancelAdmin").addEventListener('click',()=>{$("adminModal").style.display='no
 $("adminLoginBtn").addEventListener('click',async()=>{
  if($("adminPw").value!==ADMIN_PW){$("adminMsg").textContent="비번 오류";return}
  $("adminModal").style.display='none';$("adminPanel").style.display='block';
- // 세션 드롭다운 채우기
  const adminSel=$("adminSession");
  adminSel.innerHTML='';
  buildSessions().forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;adminSel.appendChild(o)});
@@ -348,6 +344,25 @@ async function renderRosterStatus(){
    body.appendChild(tr);
  });
 }
+
+// CSV 내보내기(관리자)
+function toCSV(rows, headers){
+  const needsQuote = new RegExp('[",\\n]');
+  const quoteDbl = new RegExp('"','g');
+  const esc = v => { if(v==null) return ""; v=String(v); return needsQuote.test(v) ? '"'+v.replace(quoteDbl,'""')+'"' : v; };
+  const lines=[headers.map(esc).join(',')];
+  rows.forEach(r=> lines.push(headers.map(h=>esc(r[h])).join(',')));
+  return lines.join("\n");
+}
+
+$("exportCsvBtn").addEventListener('click', async ()=>{
+  const rows = await loadAll();
+  const headers = ['timestamp','session_code','rater_id','rater_group','target_group','c_content','c_clarity','c_engagement','overall','questions_count','comment'];
+  const csv = toCSV(rows, headers);
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='submissions.csv'; a.click(); URL.revokeObjectURL(url);
+});
 </script>
 </body>
 </html>
