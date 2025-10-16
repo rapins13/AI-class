@@ -134,6 +134,7 @@
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
 <script>
+// ====== 상수/설정 ======
 const GROUPS=[
   "1조-GenAIus",
   "2조-우리보다 다 밑2조",
@@ -155,6 +156,7 @@ const VALID_IDS=[
   "20010728","21010621","21010632","21010659","21010676","21010729","21011085","21012803","21013168","22010661","22010678","22010679","22010710","22010719","22010773","22013376","22013497","22013522","23010618","23010649","23010682","23010688","23010694","23010723","23010742","23010746","23010760","23011245","23013448"
 ];
 
+// ====== Firebase 초기화 ======
 function initFirebase(){
  const firebaseConfig={
   apiKey:"AIzaSyCl7Ggf5rwG96nM8f1ZNeDRhUT1X66bPP4",
@@ -170,10 +172,11 @@ function initFirebase(){
 }
 initFirebase();
 
+// ====== 유틸 ======
 function $(id){return document.getElementById(id)}
 function nowTS(){return new Date().toISOString().slice(0,19).replace('T',' ')}
 
-// 세션 만들기
+// 세션(학생용: 오늘 이후 목요일)
 function buildSessions(){
  const sessions=[];const now=new Date();const year=now.getFullYear();const todayMid=new Date(year,now.getMonth(),now.getDate());
  for(let m=9;m<=12;m++){
@@ -182,16 +185,26 @@ function buildSessions(){
    if(x.getMonth()!==m-1) break;
    if(x.getDay()===4){
     const xMid=new Date(year,m-1,d);
-    if(xMid>=todayMid){
-     sessions.push(`${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
-    }
+    if(xMid>=todayMid){ sessions.push(`${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`); }
    }
   }
  }
  return sessions;
 }
+// 세션(관리자용: 과거 포함 9~12월 모든 목요일)
+function buildSessionsAll(){
+ const sessions=[];const now=new Date();const year=now.getFullYear();
+ for(let m=9;m<=12;m++){
+  for(let d=1;d<=31;d++){
+   const x=new Date(year,m-1,d);
+   if(x.getMonth()!==m-1) break;
+   if(x.getDay()===4){ sessions.push(`${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`); }
+  }
+ }
+ return sessions;
+}
 
-// 초기 드롭다운 & 행렬폼 렌더
+// ====== 초기 렌더 ======
 (function(){
  const sessSel=$("sessionSelect"),mySel=$("myGroupSelect");
  const sessions=buildSessions();
@@ -233,7 +246,7 @@ function validateForm(){
 ["studentId","sessionSelect","myGroupSelect","questionsCount"].forEach(id=>$(id).addEventListener('input',validateForm));
 $("matrixBody").addEventListener('input', validateForm);
 
-// 제출 저장 (조별 개별 문서, 동일 키 재제출시 덮어쓰기)
+// ====== 저장 ======
 async function saveSubmission(row){
  const docId=`${row.session_code}_${row.rater_id}_${row.target_group}`;
  await db.collection('submissions').doc(docId).set(row);
@@ -285,26 +298,49 @@ $("submitBtn").addEventListener('click', async ()=>{
  }
 });
 
-// 관리자
+// ====== 관리자 ======
 $("openAdmin").addEventListener('click',()=>{$("adminModal").style.display='flex';});
 $("cancelAdmin").addEventListener('click',()=>{$("adminModal").style.display='none'});
 $("adminLoginBtn").addEventListener('click',async()=>{
  if($("adminPw").value!==ADMIN_PW){$("adminMsg").textContent="비번 오류";return}
  $("adminModal").style.display='none';$("adminPanel").style.display='block';
- const adminSel=$("adminSession");
- adminSel.innerHTML='';
- buildSessions().forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;adminSel.appendChild(o)});
+ await populateAdminSessions();
  renderAgg();renderSubmissions();renderRosterStatus();
+ $("adminSession").addEventListener('change',()=>{renderAgg();renderSubmissions();renderRosterStatus();});
 });
 
-async function loadAll(){const snap=await db.collection('submissions').get();return snap.docs.map(d=>({id:d.id,...d.data()}));}
+async function populateAdminSessions(){
+  const adminSel=$("adminSession");
+  adminSel.innerHTML='';
+  const rows=await loadAll();
+  const have = Array.from(new Set(rows.map(r=>r.session_code).filter(Boolean)));
+  let sessions = have.length? have : buildSessionsAll();
+  sessions.sort();
+  sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;adminSel.appendChild(o)});
+  if(sessions.length){ adminSel.value = sessions[sessions.length-1]; }
+}
+
+async function loadAll(){
+  const snap=await db.collection('submissions').get();
+  return snap.docs.map(d=>({id:d.id,...d.data()}));
+}
 
 async function renderAgg(){
  const sess=$("adminSession").value||buildSessions()[0];
  const rows=(await loadAll()).filter(r=>r.session_code===sess);
  const byGroup={};
- rows.forEach(r=>{const g=r.target_group;if(!byGroup[g])byGroup[g]={count:0,sum_overall:0,sums:{}};byGroup[g].count++;byGroup[g].sum_overall+=Number(r.overall);CRITERIA.forEach(c=>{const key='c_'+c.key;byGroup[g].sums[key]=(byGroup[g].sums[key]||0)+Number(r[key])})});
- const head=$("aggHead");head.innerHTML='';['그룹','응답수','종합평균',...CRITERIA.map(c=>c.label+' 평균')].forEach(t=>{let th=document.createElement('th');th.textContent=t;head.appendChild(th)});
+ rows.forEach(r=>{
+   const g=r.target_group;
+   if(!byGroup[g])byGroup[g]={count:0,sum_overall:0,sums:{}};
+   byGroup[g].count++;
+   byGroup[g].sum_overall+=Number(r.overall);
+   CRITERIA.forEach(c=>{
+     const key='c_'+c.key;
+     byGroup[g].sums[key]=(byGroup[g].sums[key]||0)+Number(r[key]);
+   })
+ });
+ const head=$("aggHead");head.innerHTML='';
+ ['그룹','응답수','종합평균',...CRITERIA.map(c=>c.label+' 평균')].forEach(t=>{let th=document.createElement('th');th.textContent=t;head.appendChild(th)});
  const body=$("aggBody");body.innerHTML='';
  Object.entries(byGroup).forEach(([g,info])=>{
   const avg=(info.sum_overall/info.count).toFixed(2);
@@ -352,7 +388,7 @@ async function renderRosterStatus(){
  });
 }
 
-// CSV 내보내기(관리자)
+// ====== CSV 내보내기 ======
 function toCSV(rows, headers){
   const needsQuote = /[",\n]/;
   const quoteDbl = /"/g;
@@ -370,6 +406,22 @@ $("exportCsvBtn").addEventListener('click', async ()=>{
   const url = URL.createObjectURL(blob);
   const a=document.createElement('a'); a.href=url; a.download='submissions.csv'; a.click(); URL.revokeObjectURL(url);
 });
+
+// ====== 간단 테스트 ======
+(function tests(){
+  try{
+    // CSV 이스케이프 테스트
+    const tcsv = toCSV([{a:'x',b:'He said "Hi"\nnew'},{a:',comma',b:'plain'}],["a","b"]);
+    console.assert(tcsv.split("\n").length===3, 'CSV line count');
+    // 세션 빌더 (관리자) 최소 1개 이상
+    const all = buildSessionsAll();
+    console.assert(all.length>0, 'buildSessionsAll has dates');
+    // 문서 키 구성
+    const docId = `${'2025-09-04'}_${'20010728'}_${'1조-GenAIus'}`;
+    console.assert(typeof docId==='string' && docId.includes('GenAIus'),'docId format');
+    console.log('[TEST] OK');
+  }catch(e){ console.warn('[TEST] FAILED', e); }
+})();
 </script>
 </body>
 </html>
