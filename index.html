@@ -82,6 +82,7 @@
 
   <div id="adminPanel" class="card" style="display:none">
     <h2>관리자 대시보드</h2>
+    <div id="adminWarn" class="muted" style="margin-bottom:8px"></div>
     <label>세션 선택</label>
     <select id="adminSession"></select>
     <label>정렬</label>
@@ -158,17 +159,17 @@ const VALID_IDS=[
 
 // ====== Firebase 초기화 ======
 function initFirebase(){
- const firebaseConfig={
-  apiKey:"AIzaSyCl7Ggf5rwG96nM8f1ZNeDRhUT1X66bPP4",
-  authDomain:"ai-gene-cell-therapy.firebaseapp.com",
-  projectId:"ai-gene-cell-therapy",
-  storageBucket:"ai-gene-cell-therapy.firebasestorage.app",
-  messagingSenderId:"245138164213",
-  appId:"1:245138164213:web:d78e21880ce0bdf2c1b8bc",
-  measurementId:"G-TE3WHRX7SK"
- };
- firebase.initializeApp(firebaseConfig);
- db=firebase.firestore();
+  const firebaseConfig={
+    apiKey:"AIzaSyCl7Ggf5rwG96nM8f1ZNeDRhUT1X66bPP4",
+    authDomain:"ai-gene-cell-therapy.firebaseapp.com",
+    projectId:"ai-gene-cell-therapy",
+    storageBucket:"ai-gene-cell-therapy.firebasestorage.app",
+    messagingSenderId:"245138164213",
+    appId:"1:245138164213:web:d78e21880ce0bdf2c1b8bc",
+    measurementId:"G-TE3WHRX7SK"
+  };
+  firebase.initializeApp(firebaseConfig);
+  db=firebase.firestore();
 }
 initFirebase();
 
@@ -176,23 +177,8 @@ initFirebase();
 function $(id){return document.getElementById(id)}
 function nowTS(){return new Date().toISOString().slice(0,19).replace('T',' ')}
 
-// 세션(학생용: 오늘 이후 목요일)
+// 세션(학생/관리자: 9~12월 모든 목요일)
 function buildSessions(){
- const sessions=[];const now=new Date();const year=now.getFullYear();const todayMid=new Date(year,now.getMonth(),now.getDate());
- for(let m=9;m<=12;m++){
-  for(let d=1;d<=31;d++){
-   const x=new Date(year,m-1,d);
-   if(x.getMonth()!==m-1) break;
-   if(x.getDay()===4){
-    const xMid=new Date(year,m-1,d);
-    if(xMid>=todayMid){ sessions.push(`${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`); }
-   }
-  }
- }
- return sessions;
-}
-// 세션(관리자용: 과거 포함 9~12월 모든 목요일)
-function buildSessionsAll(){
  const sessions=[];const now=new Date();const year=now.getFullYear();
  for(let m=9;m<=12;m++){
   for(let d=1;d<=31;d++){
@@ -206,12 +192,21 @@ function buildSessionsAll(){
 
 // ====== 초기 렌더 ======
 (function(){
- const sessSel=$("sessionSelect"),mySel=$("myGroupSelect");
- const sessions=buildSessions();
- sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
- GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;mySel.appendChild(o)});
- mySel.addEventListener('change',renderMatrix);
- renderMatrix();
+  // 학생 폼 드롭다운 구성
+  const sessSel=$("sessionSelect"),mySel=$("myGroupSelect");
+  sessSel.innerHTML=''; mySel.innerHTML='';
+  const sessions=buildSessions();
+  sessions.sort();
+  sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
+  if(sessions.length){ sessSel.value=sessions[sessions.length-1]; }
+  GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;mySel.appendChild(o)});
+  mySel.addEventListener('change',renderMatrix);
+  sessSel.addEventListener('change',validateForm);
+  renderMatrix();
+
+  // 이벤트 바인딩
+  ["studentId","sessionSelect","myGroupSelect","questionsCount"].forEach(id=>$(id).addEventListener('input',validateForm));
+  $("matrixBody").addEventListener('input', validateForm);
 })();
 
 function renderMatrix(){
@@ -243,14 +238,15 @@ function validateForm(){
  const allFilled = [...document.querySelectorAll('#matrixBody select')].every(s=> !!s.value);
  $("submitBtn").disabled = !(okBasics && allFilled);
 }
-["studentId","sessionSelect","myGroupSelect","questionsCount"].forEach(id=>$(id).addEventListener('input',validateForm));
-$("matrixBody").addEventListener('input', validateForm);
 
 // ====== 저장 ======
 async function saveSubmission(row){
  const docId=`${row.session_code}_${row.rater_id}_${row.target_group}`;
- await db.collection('submissions').doc(docId).set(row);
+ return db.collection('submissions').doc(docId).set(row);
 }
+
+// 로컬 중복표시 키
+function localKey(session, student){ return `submitted_${session}_${student}`; }
 
 $("submitBtn").addEventListener('click', async ()=>{
  const sid=$("studentId").value.trim();
@@ -265,6 +261,13 @@ $("submitBtn").addEventListener('click', async ()=>{
  }
  const sess=$("sessionSelect").value;
  const my=$("myGroupSelect").value;
+
+ // 🔁 서버 조회 없이, 동일 브라우저 기준 중복 확인(권한 문제 회피)
+ const k = localKey(sess, sid);
+ if(localStorage.getItem(k)){
+   const ok = window.confirm('이미 이 브라우저에서 같은 세션으로 제출했습니다. 덮어 씌우시겠습니까?');
+   if(!ok){ $("submitMsg").textContent='저장을 취소했습니다.'; $("submitMsg").style.color="#c00"; return; }
+ }
 
  const selects=[...document.querySelectorAll('#matrixBody select')];
  const commentsByGroup = Object.fromEntries([...document.querySelectorAll('#matrixBody textarea')].map(t=>[t.dataset.group, t.value]));
@@ -289,12 +292,14 @@ $("submitBtn").addEventListener('click', async ()=>{
      comment: commentsByGroup[g]||'',
      ...Object.fromEntries(CRITERIA.map(c=> ['c_'+c.key, scores[c.key]||0]))
    };
-   try{ await saveSubmission(row); saved++; }catch(e){ failed++; lastErr=e.message; }
+   try{ await saveSubmission(row); saved++; }
+   catch(e){ failed++; lastErr=e.message; }
  }
  if(failed===0){
+   localStorage.setItem(k, '1'); // 브라우저 단위 제출표시
    $("submitMsg").textContent=`자기 조 제외, 제출 완료 (${saved}건 저장, 질문 ${qn}개)`; $("submitMsg").style.color="#0a7";
  }else{
-   $("submitMsg").textContent=`일부 저장 실패: ${failed}건 오류 (${lastErr})`; $("submitMsg").style.color="#c00";
+   $("submitMsg").textContent=`일부 저장 실패: ${failed}건 오류 (${lastErr}). 관리자에게 권한 설정을 요청하세요.`; $("submitMsg").style.color="#c00";
  }
 });
 
@@ -309,25 +314,31 @@ $("adminLoginBtn").addEventListener('click',async()=>{
  $("adminSession").addEventListener('change',()=>{renderAgg();renderSubmissions();renderRosterStatus();});
 });
 
+async function safeLoadAll(){
+  try{
+    const snap=await db.collection('submissions').get();
+    return snap.docs.map(d=>({id:d.id,...d.data()}));
+  }catch(e){
+    $("adminWarn").textContent='데이터를 불러올 수 없습니다. (Firestore 규칙: 읽기 허용 필요)';
+    console.warn('[ADMIN] loadAll failed', e);
+    return [];
+  }
+}
+
 async function populateAdminSessions(){
   const adminSel=$("adminSession");
   adminSel.innerHTML='';
-  const rows=await loadAll();
+  const rows=await safeLoadAll();
   const have = Array.from(new Set(rows.map(r=>r.session_code).filter(Boolean)));
-  let sessions = have.length? have : buildSessionsAll();
+  let sessions = have.length? have : buildSessions();
   sessions.sort();
   sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;adminSel.appendChild(o)});
   if(sessions.length){ adminSel.value = sessions[sessions.length-1]; }
 }
 
-async function loadAll(){
-  const snap=await db.collection('submissions').get();
-  return snap.docs.map(d=>({id:d.id,...d.data()}));
-}
-
 async function renderAgg(){
  const sess=$("adminSession").value||buildSessions()[0];
- const rows=(await loadAll()).filter(r=>r.session_code===sess);
+ const rows=(await safeLoadAll()).filter(r=>r.session_code===sess);
  const byGroup={};
  rows.forEach(r=>{
    const g=r.target_group;
@@ -353,7 +364,7 @@ async function renderAgg(){
 
 async function renderSubmissions(){
  const sess=$("adminSession").value||buildSessions()[0];
- const rows=(await loadAll()).filter(r=>r.session_code===sess);
+ const rows=(await safeLoadAll()).filter(r=>r.session_code===sess);
  const body=$("submissionsBody");body.innerHTML='';
  rows.forEach(r=>{
   let tr=document.createElement('tr');
@@ -362,7 +373,11 @@ async function renderSubmissions(){
   });
   let tdDel=document.createElement('td');
   let btn=document.createElement('button');btn.textContent='삭제';btn.className='btn danger';
-  btn.onclick=async()=>{await db.collection('submissions').doc(r.id).delete();renderSubmissions();renderAgg();renderRosterStatus();};
+  btn.onclick=async()=>{
+    try{ await db.collection('submissions').doc(r.id).delete(); }
+    catch(e){ $("adminWarn").textContent='삭제 실패: Firestore 규칙에서 삭제 허용이 필요합니다.'; return; }
+    renderSubmissions();renderAgg();renderRosterStatus();
+  };
   tdDel.appendChild(btn);tr.appendChild(tdDel);
   body.appendChild(tr);
  });
@@ -370,7 +385,7 @@ async function renderSubmissions(){
 
 async function renderRosterStatus(){
  const sess=$("adminSession").value||buildSessions()[0];
- const rows=(await loadAll()).filter(r=>r.session_code===sess);
+ const rows=(await safeLoadAll()).filter(r=>r.session_code===sess);
  const byStudent = {};
  VALID_IDS.forEach(id=>{byStudent[id]={submitted:false, questions:0};});
  rows.forEach(r=>{
@@ -399,7 +414,8 @@ function toCSV(rows, headers){
 }
 
 $("exportCsvBtn").addEventListener('click', async ()=>{
-  const rows = await loadAll();
+  const rows = await safeLoadAll();
+  if(!rows.length){ $("adminWarn").textContent='CSV 내보내기 실패: 읽을 데이터가 없습니다.(규칙 확인)'; return; }
   const headers = ['timestamp','session_code','rater_id','rater_group','target_group','c_content','c_clarity','c_engagement','overall','questions_count','comment'];
   const csv = toCSV(rows, headers);
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
@@ -413,9 +429,9 @@ $("exportCsvBtn").addEventListener('click', async ()=>{
     // CSV 이스케이프 테스트
     const tcsv = toCSV([{a:'x',b:'He said "Hi"\nnew'},{a:',comma',b:'plain'}],["a","b"]);
     console.assert(tcsv.split("\n").length===3, 'CSV line count');
-    // 세션 빌더 (관리자) 최소 1개 이상
-    const all = buildSessionsAll();
-    console.assert(all.length>0, 'buildSessionsAll has dates');
+    // 세션 빌더 최소 1개 이상
+    const all = buildSessions();
+    console.assert(all.length>0, 'buildSessions has dates');
     // 문서 키 구성
     const docId = `${'2025-09-04'}_${'20010728'}_${'1조-GenAIus'}`;
     console.assert(typeof docId==='string' && docId.includes('GenAIus'),'docId format');
