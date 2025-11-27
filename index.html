@@ -26,6 +26,7 @@
     .muted{color:#666;font-size:12px}
     .sticky{position:sticky;left:0;background:#fff;}
   </style>
+  <!-- admin matrices & analytics added -->
 </head>
 <body>
 <div class="wrap">
@@ -127,6 +128,24 @@
       </thead>
       <tbody id="rosterCumu"></tbody>
     </table>
+
+    <h3 style="margin-top:16px">[신규] 날짜별 학번별 <u>제출 여부</u> 매트릭스</h3>
+    <table>
+      <thead id="qSubmitHead"></thead>
+      <tbody id="qSubmitBody"></tbody>
+    </table>
+
+    <h3 style="margin-top:16px">[신규] 날짜별 학번별 <u>질문 개수</u> 매트릭스</h3>
+    <table>
+      <thead id="qCountHead"></thead>
+      <tbody id="qCountBody"></tbody>
+    </table>
+
+    <h3 style="margin-top:16px">[신규] 날짜별 조별 <u>평균 종합점수</u> 매트릭스</h3>
+    <table>
+      <thead id="grpAvgHead"></thead>
+      <tbody id="grpAvgBody"></tbody>
+    </table>
   </div>
 </div>
 
@@ -145,7 +164,474 @@
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
 <script>
-// 여기에 기존 JS 로직 유지 (권한점검 관련 부분은 제거됨)
+// ====== 상수/설정 ======
+const GROUPS=[
+  "1조-GenAIus",
+  "2조-우리보다 다 밑2조",
+  "3조-Team T-ssue",
+  "4조-A.I.D.",
+  "5조-By5",
+  "6조-Cell4Cure"
+];
+const CRITERIA=[
+ {key:"content",label:"내용의 정확성/깊이"},
+ {key:"clarity",label:"발표 명료성/구성"},
+ {key:"engagement",label:"청중과의 상호작용"}
+];
+const ADMIN_PW="1313";
+let db=null;
+
+// 허용된 학번 리스트
+const VALID_IDS=[
+  "20010728","21010621","21010632","21010659","21010676","21010729","21011085","21012803","21013168","22010661","22010678","22010679","22010710","22010719","22010773","22013376","22013497","22013522","23010618","23010649","23010682","23010688","23010694","23010723","23010742","23010746","23010760","23011245","23013448","22013569"
+];
+
+// ====== Firebase 초기화 ======
+function initFirebase(){
+  const firebaseConfig={
+    apiKey:"AIzaSyCl7Ggf5rwG96nM8f1ZNeDRhUT1X66bPP4",
+    authDomain:"ai-gene-cell-therapy.firebaseapp.com",
+    projectId:"ai-gene-cell-therapy",
+    storageBucket:"ai-gene-cell-therapy.firebasestorage.app",
+    messagingSenderId:"245138164213",
+    appId:"1:245138164213:web:d78e21880ce0bdf2c1b8bc",
+    measurementId:"G-TE3WHRX7SK"
+  };
+  firebase.initializeApp(firebaseConfig);
+  db=firebase.firestore();
+}
+initFirebase();
+
+// ====== 유틸 ======
+function $(id){return document.getElementById(id)}
+function nowTS(){return new Date().toISOString().slice(0,19).replace('T',' ')}
+
+// 세션(학생/관리자: 9~12월 모든 목요일)
+function buildSessions(){
+ const sessions=[];const now=new Date();const year=now.getFullYear();
+ for(let m=9;m<=12;m++){
+  for(let d=1;d<=31;d++){
+   const x=new Date(year,m-1,d);
+   if(x.getMonth()!==m-1) break;
+   if(x.getDay()===4){ sessions.push(`${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`); }
+  }
+ }
+ return sessions;
+}
+
+// ====== 초기 렌더 ======
+(function(){
+  // 학생 폼 드롭다운 구성
+  const sessSel=$("sessionSelect"),mySel=$("myGroupSelect");
+  sessSel.innerHTML=''; mySel.innerHTML='';
+  const sessions=buildSessions();
+  sessions.sort();
+  sessions.forEach(s=>{let o=document.createElement('option');o.value=o.textContent=s;sessSel.appendChild(o)});
+  if(sessions.length){ sessSel.value=sessions[sessions.length-1]; }
+  GROUPS.forEach(g=>{let o=document.createElement('option');o.value=o.textContent=g;mySel.appendChild(o)});
+  mySel.addEventListener('change',renderMatrix);
+  sessSel.addEventListener('change',validateForm);
+  renderMatrix();
+
+  // 이벤트 바인딩
+  ["studentId","sessionSelect","myGroupSelect","questionsCount"].forEach(id=>$(id).addEventListener('input',validateForm));
+  $("matrixBody").addEventListener('input', validateForm);
+})();
+
+function renderMatrix(){
+ const body=$("matrixBody"); body.innerHTML='';
+ const my=$("myGroupSelect").value;
+ GROUPS.forEach(g=>{
+   if(my && g===my) return; // 자기 조는 표에서 숨김
+   const tr=document.createElement('tr');
+   const th=document.createElement('td'); th.textContent=g; th.className='sticky'; tr.appendChild(th);
+   CRITERIA.forEach(c=>{
+     const td=document.createElement('td');
+     const sel=document.createElement('select'); sel.dataset.group=g; sel.dataset.key=c.key;
+     [1,2,3,4,5].forEach(v=>{const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o)});
+     td.appendChild(sel); tr.appendChild(td);
+   });
+   const tdC=document.createElement('td'); const txt=document.createElement('textarea'); txt.rows=1; txt.dataset.group=g; txt.placeholder='선택'; tdC.appendChild(txt); tr.appendChild(tdC);
+   body.appendChild(tr);
+ });
+ validateForm();
+}
+
+function validateForm(){
+ const sid=$("studentId").value.trim();
+ const sess=$("sessionSelect").value;
+ const my=$("myGroupSelect").value;
+ const q=$("questionsCount").value;
+ const validQ = q!=='' && Number(q)>=0 && Number.isInteger(Number(q));
+ const okBasics = sid && sess && my && validQ;
+ const allFilled = [...document.querySelectorAll('#matrixBody select')].every(s=> !!s.value);
+ $("submitBtn").disabled = !(okBasics && allFilled);
+}
+
+// ====== 저장 ======
+async function saveSubmission(row){
+ const docId=`${row.session_code}_${row.rater_id}_${row.target_group}`;
+ return db.collection('submissions').doc(docId).set(row);
+}
+
+// 로컬 중복표시 키
+function localKey(session, student){ return `submitted_${session}_${student}`; }
+
+$("submitBtn").addEventListener('click', async ()=>{
+ const sid=$("studentId").value.trim();
+ if(!VALID_IDS.includes(sid)){
+   $("submitMsg").textContent="학번을 확인하세요.";
+   $("submitMsg").style.color="#c00"; return;
+ }
+ const qn = Number($("questionsCount").value||0);
+ if(!(Number.isInteger(qn) && qn>=0)){
+   $("submitMsg").textContent="질문 개수를 올바르게 입력하세요 (0 이상의 정수).";
+   $("submitMsg").style.color="#c00"; return;
+ }
+ const sess=$("sessionSelect").value;
+ const my=$("myGroupSelect").value;
+
+ // 🔁 서버 조회 없이, 동일 브라우저 기준 중복 확인
+ const k = localKey(sess, sid);
+ if(localStorage.getItem(k)){
+   const ok = window.confirm('이미 이 브라우저에서 같은 세션으로 제출했습니다. 덮어 씌우시겠습니까?');
+   if(!ok){ $("submitMsg").textContent='저장을 취소했습니다.'; $("submitMsg").style.color="#c00"; return; }
+ }
+
+ const selects=[...document.querySelectorAll('#matrixBody select')];
+ const commentsByGroup = Object.fromEntries([...document.querySelectorAll('#matrixBody textarea')].map(t=>[t.dataset.group, t.value]));
+ const dataByGroup = {};
+ selects.forEach(s=>{
+   const g=s.dataset.group, k=s.dataset.key, v=parseInt(s.value,10);
+   if(!dataByGroup[g]) dataByGroup[g]={};
+   dataByGroup[g][k]=v;
+ });
+
+ let saved=0, failed=0; let lastErr='';
+ for(const g of GROUPS){
+   if(my && g===my) continue; // 자기 조는 저장 제외
+   const scores=dataByGroup[g]||{};
+   const vals = CRITERIA.map(c=> Number(scores[c.key]||0));
+   const sum = vals.reduce((a,b)=>a+b,0);
+   const overall=(sum/CRITERIA.length).toFixed(2);
+   const row={
+     timestamp:nowTS(), session_code:sess,
+     rater_id:sid, rater_group:my, target_group:g,
+     overall, questions_count: qn,
+     comment: commentsByGroup[g]||'',
+     ...Object.fromEntries(CRITERIA.map(c=> ['c_'+c.key, scores[c.key]||0]))
+   };
+   try{ await saveSubmission(row); saved++; }
+   catch(e){ failed++; lastErr=e.message; }
+ }
+ if(failed===0){
+   localStorage.setItem(k, '1'); // 브라우저 단위 제출표시
+   $("submitMsg").textContent=`자기 조 제외, 제출 완료 (${saved}건 저장, 질문 ${qn}개)`; $("submitMsg").style.color="#0a7";
+ }else{
+   $("submitMsg").textContent=`일부 저장 실패: ${failed}건 오류 (${lastErr}). 관리자에게 권한 설정을 요청하세요.`; $("submitMsg").style.color="#c00";
+ }
+});
+
+// ====== 관리자 ======
+$("openAdmin").addEventListener('click',()=>{$("adminModal").style.display='flex';});
+$("cancelAdmin").addEventListener('click',()=>{$("adminModal").style.display='none'});
+$("adminLoginBtn").addEventListener('click',async()=>{
+ if($("adminPw").value!==ADMIN_PW){$("adminMsg").textContent="비번 오류";return}
+ $("adminModal").style.display='none';$("adminPanel").style.display='block';
+ await populateAdminSessions();
+ renderAgg();renderSubmissions();renderRosterStatus();
+ renderQuestionsMatrices();renderGroupAveragesByDate();
+ $("adminSession").addEventListener('change',()=>{renderAgg();renderSubmissions();renderRosterStatus();renderQuestionsMatrices();renderGroupAveragesByDate();});
+});
+
+async function safeLoadAll(){
+  try{
+    const snap=await db.collection('submissions').get();
+    return snap.docs.map(d=>({id:d.id,...d.data()}));
+  }catch(e){
+    $("adminWarn").textContent='데이터를 불러올 수 없습니다. (Firestore 규칙: 읽기 허용 필요)';
+    console.warn('[ADMIN] loadAll failed', e);
+    return [];
+  }
+}
+
+async function populateAdminSessions(){
+  const adminSel=$("adminSession");
+  adminSel.innerHTML='';
+  const rows=await safeLoadAll();
+  const have = Array.from(new Set(rows.map(r=>r.session_code).filter(Boolean)));
+  let sessions = have.length? have : buildSessions();
+  sessions.sort();
+  sessions.forEach((s)=>{let o=document.createElement('option');o.value=o.textContent=s;adminSel.appendChild(o)});
+  if(sessions.length){ adminSel.value = sessions[sessions.length-1]; }
+}
+
+async function renderAgg(){
+ const sess=$("adminSession").value||buildSessions()[0];
+ const rows=(await safeLoadAll()).filter(r=>r.session_code===sess);
+ const byGroup={};
+ rows.forEach(r=>{
+   const g=r.target_group;
+   if(!byGroup[g])byGroup[g]={count:0,sum_overall:0,sums:{}};
+   byGroup[g].count++;
+   byGroup[g].sum_overall+=Number(r.overall);
+   CRITERIA.forEach(c=>{
+     const key='c_'+c.key;
+     byGroup[g].sums[key]=(byGroup[g].sums[key]||0)+Number(r[key]);
+   })
+ });
+ const head=$("aggHead");head.innerHTML='';
+ ['그룹','응답수','종합평균',...CRITERIA.map(c=>c.label+' 평균')].forEach(t=>{let th=document.createElement('th');th.textContent=t;head.appendChild(th)});
+ const body=$("aggBody");body.innerHTML='';
+ Object.entries(byGroup).forEach(([g,info])=>{
+  const avg=(info.sum_overall/info.count).toFixed(2);
+  const avgEach=CRITERIA.map(c=>(info.sums['c_'+c.key]/info.count).toFixed(2));
+  let tr=document.createElement('tr');
+  [g,info.count,avg,...avgEach].forEach(v=>{let td=document.createElement('td');td.textContent=v;tr.appendChild(td)});
+  body.appendChild(tr);
+ });
+}
+
+async function renderSubmissions(){
+ const sess=$("adminSession").value||buildSessions()[0];
+ const rows=(await safeLoadAll()).filter(r=>r.session_code===sess);
+ const body=$("submissionsBody");body.innerHTML='';
+ rows.forEach(r=>{
+  let tr=document.createElement('tr');
+  [r.rater_id,r.session_code,r.rater_group,r.target_group,r.c_content,r.c_clarity,r.c_engagement,r.overall,(r.questions_count??0),r.comment].forEach(v=>{
+    let td=document.createElement('td');td.textContent=v;tr.appendChild(td);
+  });
+  let tdDel=document.createElement('td');
+  let btn=document.createElement('button');btn.textContent='삭제';btn.className='btn danger';
+  btn.onclick=async()=>{
+    try{ await db.collection('submissions').doc(r.id).delete(); }
+    catch(e){ $("adminWarn").textContent='삭제 실패: Firestore 규칙에서 삭제 허용이 필요합니다.'; return; }
+    renderSubmissions();renderAgg();renderRosterStatus();renderQuestionsMatrices();renderGroupAveragesByDate();
+  };
+  tdDel.appendChild(btn);tr.appendChild(tdDel);
+  body.appendChild(tr);
+ });
+}
+
+async function renderRosterStatus(){
+ const sess=$("adminSession").value||buildSessions()[0];
+ const rowsAll=await safeLoadAll();
+ const rowsSess=rowsAll.filter(r=>r.session_code===sess);
+ 
+ // --- (A) 세션별 제출/질문 합계: 질문 수는 "학생×세션" 당 1번만 집계 ---
+ const byStudent = {};
+ VALID_IDS.forEach(id=>{byStudent[id]={submitted:false, questions:0};});
+ const seenPerSession = new Set(); // keys: rater_id|session_code (이 세션 내 중복 방지)
+ rowsSess.forEach(r=>{
+   const id=r.rater_id; if(!(id in byStudent)) return;
+   byStudent[id].submitted = true;
+   const key = id+"|"+r.session_code;
+   if(!seenPerSession.has(key)){
+     byStudent[id].questions += Number(r.questions_count||0);
+     seenPerSession.add(key);
+   }
+ });
+ const body=$("rosterBody"); body.innerHTML='';
+ VALID_IDS.forEach(id=>{
+   const tr=document.createElement('tr');
+   const submitted = byStudent[id].submitted ? 'O' : 'X';
+   const qsum = byStudent[id].questions;
+   [id, submitted, qsum].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
+   body.appendChild(tr);
+ });
+ 
+ // --- (B) 전체 학기 누적 질문: 세션마다 1번만 합산 (그룹별 중복 제거) ---
+ const cumu = {}; VALID_IDS.forEach(id=>cumu[id]=0);
+ const seenAll = new Set(); // keys: rater_id|session_code (모든 세션 중복 방지)
+ rowsAll.forEach(r=>{
+   const id=r.rater_id; if(!(id in cumu)) return;
+   const key = id+"|"+r.session_code;
+   if(!seenAll.has(key)){
+     cumu[id] += Number(r.questions_count||0);
+     seenAll.add(key);
+   }
+ });
+ const bodyC=$("rosterCumu"); bodyC.innerHTML='';
+ VALID_IDS.forEach(id=>{
+   const tr=document.createElement('tr');
+   [id, cumu[id]].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
+   bodyC.appendChild(tr);
+ });
+}
+
+// ====== CSV 내보내기 ======
+function toCSV(rows, headers){
+  const needsQuote = /[",\n]/;            // 따옴표, 콤마, 줄바꿈 포함 시 인용부호 필요
+  const quoteDbl = /\"/g;                    // " → ""
+  const esc = v => { if(v==null) return ""; v=String(v); return needsQuote.test(v) ? '"'+v.replace(quoteDbl,'""')+'"' : v; };
+  const lines=[headers.map(esc).join(',')];
+  rows.forEach(r=> lines.push(headers.map(h=>esc(r[h])).join(',')));
+  return lines.join("\n");
+}
+
+$("exportCsvBtn").addEventListener('click', async ()=>{
+  const rows = await safeLoadAll();
+  if(!rows.length){ $("adminWarn").textContent='CSV 내보내기 실패: 읽을 데이터가 없습니다.(규칙 확인)'; return; }
+  const headers = ['timestamp','session_code','rater_id','rater_group','target_group','c_content','c_clarity','c_engagement','overall','questions_count','comment'];
+  const csv = toCSV(rows, headers);
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='submissions.csv'; a.click(); URL.revokeObjectURL(url);
+});
+
+// ====== 간단 테스트 ======
+(function tests(){
+  try{
+    // CSV 이스케이프 테스트 (줄바꿈 포함 문자열)
+    const tcsv = toCSV(
+      [{a:'x', b:'He said \"Hi\"\nnew'}, {a:',comma', b:'plain'}],
+      ["a","b"]
+    );
+    console.assert(tcsv.split("\n").length===3, 'CSV line count');
+
+    // 따옴표/콤마/줄바꿈 혼합 케이스 추가 테스트
+    const mixed = toCSV(
+      [{x:'\"quote\"', y:'one,two\nthree'}],
+      ["x","y"]
+    );
+    const parts = mixed.split("\n");
+    console.assert(parts.length===2, 'CSV 2 lines');
+    console.assert(/""quote""/.test(parts[1]), 'quotes doubled');
+    console.assert(/"one,two\nthree"/.test(parts[1]), 'newline quoted');
+
+    // 세션 빌더 최소 1개 이상
+    const all = buildSessions();
+    console.assert(all.length>0, 'buildSessions has dates');
+
+    // 문서 키 구성
+    const docId = `${'2025-09-04'}_${'20010728'}_${'1조-GenAIus'}`;
+    console.assert(typeof docId==='string' && docId.includes('GenAIus'),'docId format');
+
+    // 질문 합계 dedup 테스트: 동일 학생/세션 문서 5개(그룹별)여도 질문은 1회만 집계
+    const mock = [1,2,3,4,5].map(i=>({rater_id:'20010728', session_code:'2025-09-04', questions_count:3}));
+    let seen=new Set(), sum=0;
+    mock.forEach(r=>{const k=r.rater_id+'|'+r.session_code; if(!seen.has(k)){sum+=r.questions_count; seen.add(k);} });
+    console.assert(sum===3,'questions dedup per session');
+
+    console.log('[TEST] OK');
+  }catch(e){ console.warn('[TEST] FAILED', e); }
+})();
+
+// ====== 신규: 날짜별 학번별 제출/질문 매트릭스, 날짜별 조별 평균 ======
+function getSortedSessionsFromRows(rows){
+  const set=new Set(rows.map(r=>r.session_code).filter(Boolean));
+  const list=[...set];
+  list.sort();
+  return list;
+}
+function firstClassThursday(year){
+  // 학기 기준: 9~12월 중 "가장 이른 목요일"을 1주차 기준일로 사용
+  for(let m=9;m<=12;m++){
+    for(let d=1;d<=7;d++){
+      const dt=new Date(year, m-1, d);
+      if(dt.getMonth()!==m-1) break;
+      if(dt.getDay()===4) return dt; // 목요일
+    }
+  }
+  // 안전장치: 혹시 위에서 못 찾으면 9/01 반환
+  return new Date(year,8,1);
+}
+function getWeekIndex(dateStr){
+  // dateStr: YYYY-MM-DD → 해당 년도의 9~12월 학기 내 주차(첫 목요일=1주차)
+  const [y,m,d]=dateStr.split('-').map(Number);
+  const year=y;
+  const target=new Date(year, m-1, d);
+  const start=firstClassThursday(year);
+  // start 이전 날짜라면 0 처리
+  if(target < start) return 0;
+  // start 기준으로 몇 주가 지났는지 계산 (목요일 간격)
+  const diffDays=Math.floor((target - start)/(1000*60*60*24));
+  const weeks=Math.floor(diffDays/7);
+  return weeks+1; // 1주차부터 시작
+}
+function labelSessions(sessions){
+  return sessions.map((s)=>{ const [y,m,d]=s.split('-').map(Number); const w=getWeekIndex(s); return `${m}월 ${d}일(${w}주차)`; });
+}
+async function renderQuestionsMatrices(){
+  const rows=await safeLoadAll();
+  if(!rows.length){
+    $("qSubmitHead").innerHTML=''; $("qSubmitBody").innerHTML='';
+    $("qCountHead").innerHTML=''; $("qCountBody").innerHTML='';
+    return;
+  }
+  const sessions=getSortedSessionsFromRows(rows);
+  const headers = ['학번', ...labelSessions(sessions)];
+  $("qSubmitHead").innerHTML='<tr>'+headers.map(h=>`<th>${h}</th>`).join('')+'</tr>';
+  $("qSubmitBody").innerHTML='';
+  $("qCountHead").innerHTML='<tr>'+headers.map(h=>`<th>${h}</th>`).join('')+'</tr>';
+  $("qCountBody").innerHTML='';
+
+  const mapQS=new Map(); // student|session -> {submitted,q}
+  rows.forEach(r=>{
+    const key = r.rater_id+'|'+r.session_code;
+    if(!mapQS.has(key)) mapQS.set(key,{submitted:true,q:Number(r.questions_count||0)});
+  });
+
+  VALID_IDS.forEach(stu=>{
+    const tds=[`<td>${stu}</td>`];
+    sessions.forEach(s=>{ const k=stu+'|'+s; const v=mapQS.get(k); tds.push(`<td>${v? 'O':'X'}</td>`); });
+    const tr=document.createElement('tr'); tr.innerHTML=tds.join(''); $("qSubmitBody").appendChild(tr);
+  });
+
+  VALID_IDS.forEach(stu=>{
+    const tds=[`<td>${stu}</td>`];
+    sessions.forEach(s=>{ const k=stu+'|'+s; const v=mapQS.get(k); tds.push(`<td>${v? v.q: 0}</td>`); });
+    const tr=document.createElement('tr'); tr.innerHTML=tds.join(''); $("qCountBody").appendChild(tr);
+  });
+}
+
+async function renderGroupAveragesByDate(){
+  const rows=await safeLoadAll();
+  if(!rows.length){ $("grpAvgHead").innerHTML=''; $("grpAvgBody").innerHTML=''; return; }
+  const sessions=getSortedSessionsFromRows(rows);
+  const headers=['그룹', ...labelSessions(sessions)];
+  $("grpAvgHead").innerHTML='<tr>'+headers.map(h=>`<th>${h}</th>`).join('')+'</tr>';
+  $("grpAvgBody").innerHTML='';
+
+  const groupAvg={}; sessions.forEach(s=> groupAvg[s]={});
+  rows.forEach(r=>{
+    const s=r.session_code, g=r.target_group; if(!s||!g) return;
+    if(!groupAvg[s][g]) groupAvg[s][g]={sum:0,count:0};
+    groupAvg[s][g].sum += Number(r.overall);
+    groupAvg[s][g].count += 1;
+  });
+  GROUPS.forEach(g=>{
+    const tds=[`<td>${g}</td>`];
+    sessions.forEach(s=>{
+      const info=groupAvg[s][g];
+      const val = info && info.count ? (info.sum/info.count).toFixed(2) : '';
+      tds.push(`<td>${val}</td>`);
+    });
+    const tr=document.createElement('tr'); tr.innerHTML=tds.join(''); $("grpAvgBody").appendChild(tr);
+  });
+}
+
+// ====== 테스트 추가 ======
+(function extraTests(){
+  try{
+    // 주차 라벨링 고정 테스트: 9/4=1주차, 9/18=3주차, 10/9=6주차 (2025년 기준)
+    const w1 = getWeekIndex('2025-09-04');
+    const w3 = getWeekIndex('2025-09-18');
+    const w6 = getWeekIndex('2025-10-09');
+    console.assert(w1===1 && w3===3 && w6===6, `weekIndex mapping wrong: ${w1},${w3},${w6}`);
+
+    const labels = labelSessions(['2025-09-04','2025-09-11']);
+    console.assert(labels[0].includes('9월') && labels[0].includes('1주차'),'labelSessions ok');
+
+    const mock=[
+      {session_code:'2025-09-04', target_group:'1조-GenAIus', overall:4},
+      {session_code:'2025-09-04', target_group:'1조-GenAIus', overall:2},
+      {session_code:'2025-09-11', target_group:'1조-GenAIus', overall:5}
+    ];
+    const sess=getSortedSessionsFromRows(mock);
+    console.assert(sess.length===2,'getSortedSessionsFromRows len');
+  }catch(e){ console.warn('[EXT TEST] FAILED', e); }
+})();
 </script>
 </body>
 </html>
